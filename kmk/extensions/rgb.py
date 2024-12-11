@@ -106,6 +106,7 @@ class RGB(Extension):
         user_animation=None,
         pixels=None,
         refresh_rate=60,
+        key_matrix=[],
     ):
         self.pixel_pin = pixel_pin
         self.num_pixels = num_pixels
@@ -130,6 +131,14 @@ class RGB(Extension):
         self.pixels = pixels
         self.refresh_rate = refresh_rate
 
+
+        if len(key_matrix) == 0:
+            for i in range(0, num_pixels):
+                key_matrix.append(i)
+            
+        print(key_matrix)
+        self.key_matrix = key_matrix
+        
         self.rgbw = bool(len(rgb_order) == 4)
 
         self._substep = 0
@@ -460,7 +469,7 @@ class RGB(Extension):
         self.increase_hue(self._step)
         for i in range(0, self.num_pixels):
             self.set_hsv(
-                (self.hue - (i * self.num_pixels)) % 256, self.sat, self.val, i
+                (self.hue - (i * self.num_pixels)) % 256, self.sat, self.val, self.key_matrix[i]
             )
 
     def effect_knight(self):
@@ -468,9 +477,22 @@ class RGB(Extension):
         self.off()  # Fill all off
         pos = int(self.pos)
 
+        #cap start and end as to not go over or under bounds
+        #max limit
+        if (pos + self.knight_effect_length) >= self.num_pixels - 1:
+            effect_end = self.num_pixels
+        else:
+            effect_end = (pos + self.knight_effect_length)
+
+        #min limit
+        if pos < 0:
+            effect_start = 0
+        else:
+            effect_start = pos
+        
         # Set all pixels on in range of animation length offset by position
-        for i in range(pos, (pos + self.knight_effect_length)):
-            self.set_hsv(self.hue, self.sat, self.val, i)
+        for i in range(effect_start, effect_end):
+            self.set_hsv(self.hue, self.sat, self.val, self.key_matrix[i])
 
         # Reverse animation when a boundary is hit
         if pos >= self.num_pixels:
