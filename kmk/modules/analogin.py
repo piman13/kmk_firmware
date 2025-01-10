@@ -6,8 +6,14 @@ from analogio import AnalogIn
 
 debug = Debug(__name__)
 
-DEFAULT_FILTER = lambda input: input >> 8
-VEL_MAX_TIME = 100 #this might fall behind with more scans (aim to make scans take less time)
+
+DEFAULT_FILTER = [
+    lambda input, offset: input >> offset,
+    lambda input, offset: ~(input >> offset) + (65536 >> offset)
+]
+
+
+VEL_MAX_TIME = 100 #this might fall behind with more scans (aim to make scans take less time) default
 
 
 #thinking notes for mux
@@ -28,17 +34,11 @@ def noop(*args):
 
 ## invert the filter by changing the outputed value to a negitive then adding back to positive
 ## and getting max val from the filter so even very custom filters can work
-def eval_filter(filter, invert):
-    if invert == True:
-        filter_max = filter(65535) + 1 #eval filter max to not run every time
-        filter_out = lambda input: ((~filter(input)) + filter_max)
-    else:
-        filter_out = filter
-        filter_max = 255
-    return filter_out, filter_max
-
-
-
+##def eval_filter(filter):
+##    filter_max = filter(65535) + 1 #eval filter max to not run every time
+##    filter_inverted = lambda input: ((~filter(input)) + filter_max)
+##    return filter_inverted, filter_max
+##
 
 
 #class to provide on_change and on_stop if not
@@ -90,18 +90,26 @@ class AnalogKey(AnalogEvent):
 #we also store values for external and internal functions to use that
 #may go unused but still take memory. this may cause problems elsewere
 #e.g if rgb is enabled lol
+##class AnalogInput(AnalogEvent):
+##    def __init__(self, input, filter=DEFAULT_FILTER, invert=False, sensitivity=1):
+##        self.input = lambda: input.value
+##        self.invert = invert
+##        self.sensitivity = sensitivity
+##        self.filter, self.filtermax = eval_filter(filter)
+##        self._state = False
+##        self.raw_value = 0
+##        self.time = ticks_ms()
+##        self.value = 0
+##        self.delta = 0
+##        
+
 class AnalogInput(AnalogEvent):
-    def __init__(self, input, filter=DEFAULT_FILTER, invert=False, sensitivity=1):
+    def __init__(self, input):
         self.input = lambda: input.value
-        self.invert = invert
-        self.sensitivity = sensitivity
-        self.filter, self.filtermax = eval_filter(filter, self.invert)
-        self._state = False
-        self.raw_value = 0
-        self.time = ticks_ms()
         self.value = 0
         self.delta = 0
-        
+        self._state = False
+        self.time = ticks_ms()
 
     #calculate velocity upon call, this is kept serpate
     #so as to not waste time with an unnecessary calc unless needed
@@ -132,18 +140,18 @@ class AnalogInput(AnalogEvent):
     #value. time, delta, _state
     #time is not used in this but it is used in velocity and
     #could be used in other functions (not sure for what but it's there)
-    def update_state(self):
-        value = self.filter(self.input())
+    def update_state(self, filter, sensitivity):
+        value = filter(self.input())
         delta = value - self.value
 
         #randomly takes ~27ms (likely due to the garbage colector or other threads)
-        if delta not in range(-self.sensitivity, self.sensitivity + 1):
+        if delta not in range(-sensitivity, sensitivity + 1):
             self.value = value #catch slow movements by not updating until delta passed
             self._state = True
             
             
-        elif (delta in range(-self.sensitivity, self.sensitivity + 1) and
-              self.delta not in range(-self.sensitivity, self.sensitivity + 1)):
+        elif (delta in range(-sensitivity, sensitivity + 1) and
+              self.delta not in range(-sensitivity, sensitivity + 1)):
             self.value = value
             self._state = False
         
@@ -193,9 +201,9 @@ class AnalogHandler(Module):
         self.disabledmuxs = None          #list of disabled mux keys
                                           #(so you don't have a bunch of floating or grounded keys)
                                           #list of indexs to skip during boot (might need a better solution)
-        self.filtermap = [DEFAULT_FILTER] #list to contain custom filters to the inputs
-        self.invertmap = [False]          #list to set inputs to be inverted or all
-        self.sensitivitymap = [1]         #set the sensitivity of each input
+        self.filtermap = [[]] #list to contain custom filters to the inputs
+        self.invertmap = [[]]          #list to set inputs to be inverted or all
+        self.sensitivitymap = [[]]         #set the sensitivity of each input
         
     def on_runtime_enable(self, keyboard):
         return
@@ -208,40 +216,39 @@ class AnalogHandler(Module):
     #so filters can be per layer
     def during_bootup(self, keyboard):
         if self.apins and self.evtmap:
+
             if self.mpins is not None:
                 #pass to mux handler
                 print("not implemented yet")
             else:
-                #direct pin mode
-                #perhaps move to func?
                 if debug.enabled:
                     debug('analog mode: direct pin mode')
-                for idx, pin in enumerate(self.apins):
-                    #allow for filter, invert and sensitivity to be either fill all or per io
-                    #might compact this.. looks ugly
-                    if len(self.filtermap) > 1:
-                        filter = self.filtermap[idx]
-                    else:
-                        filter = self.filtermap[0]
-                        
-                    if len(self.invertmap) > 1:
-                        invert = self.invertmap[idx]
-                    else:
-                        invert = self.invertmap[0]
-
-                    if len(self.sensitivitymap) > 1:
-                        sensitivity = self.sensitivitymap[idx]
-                    else:
-                        sensitivity = self.sensitivitymap[0]
-
-                    self.analogs.append(
-                        AnalogInput(AnalogIn(pin),filter, invert, sensitivity)
-                    )
                     
-                print(self.analogs)
+                for idx, pin in enumerate(self.apins):
+                    self.analogs.append(AnalogInput(AnalogIn(pin)))
+       
+                print("analogs: " + str(self.analogs))
+
+
+            if self.filtermap == [[]]:
+                print("filtermap not filled")
+                if len(self.evtmap) > 0:
+                    for layer_x, layer in enumerate(self.evtmap):
+                        for idx, event in enumerate(layer):
+                            print(idx, event)
+                            print(isinstance(event, KC))
+                            if isinstance(event, KC):
+                                print("its a key!")
+                            elif hasattr(event, 'properties'):
+                                print(event.properties.filter)
+                                print(event.properties.sensitivity)
+                            
+
+            else:
+                print("else")
+                        
         elif debug.enabled:
             debug('missing event map or analog pins')
-            
         return
 
 
@@ -250,14 +257,48 @@ class AnalogHandler(Module):
     #like filters during boot up
     def before_matrix_scan(self, keyboard):
         for idx, analog in enumerate(self.analogs):
-            #timein = ticks_ms()
+            keyboard_layer = keyboard.active_layers[0]
+
+            #load in maps and catch other cases
+            if len(self.filtermap[0]) > 0:
+                try:
+                    filter_id = self.filtermap[keyboard_layer][idx]
+                except:
+                    debug("error in filtermap. defaulting to 0-255")
+                    filter_id = 8
+            else: #this should never happen fool make boot code for building from evtmap
+                filter_id = 8
+                
+            ######################
+            if type(self.invertmap) is bool :
+                invert = self.invertmap
+            else:
+                try:
+                    invert = self.invertmap[keyboard_layer][idx]
+                except:
+                    invert = False
+                    if debug.enabled:
+                        debug("invertmap format error at layer:", keyboard_layer, " event: ", idx)
+
+            ######################
+            try:
+                sensitivity = self.sensitivitymap[keyboard_layer][idx]
+            except:
+                sensitivity = 1
+            ######################
+
+            if type(filter_id) is int:
+                filter_direction = DEFAULT_FILTER[invert]
+                filter = lambda input : filter_direction(input, filter_id)
+            ######################
+                
             old_state = analog._state
-            analog.update_state()
+
+            analog.update_state(filter, sensitivity)
          
-            event_func = self.evtmap[keyboard.active_layers[0]][idx]
+            event_func = self.evtmap[keyboard_layer][idx]
 
             if analog._state: #on change
-                
                 event_func.on_change(keyboard, analog)
             elif not analog._state and old_state: #on stop
                 event_func.on_stop(keyboard, analog)
