@@ -30,15 +30,13 @@ def noop(*args):
     pass
 
 
-
-
 ## invert the filter by changing the outputed value to a negitive then adding back to positive
 ## and getting max val from the filter so even very custom filters can work
-##def eval_filter(filter):
-##    filter_max = filter(65535) + 1 #eval filter max to not run every time
-##    filter_inverted = lambda input: ((~filter(input)) + filter_max)
-##    return filter_inverted, filter_max
-##
+def eval_filter(filter):
+    filter_max = filter(65535) + 1 #eval filter max to not run every time
+    filter_inverted = lambda input: ((~filter(input)) + filter_max)
+    return filter_inverted, filter_max
+
 
 
 #class to provide on_change and on_stop if not
@@ -54,6 +52,12 @@ class AnalogEvent:
     def on_stop(self, event, keyboard):
         self._on_stop(self, event, keyboard)
 
+
+class AnalogNoop(AnalogEvent):
+    def on_change(*args):
+        pass
+    def on_stop(*args):
+        pass
 
 #simple adjustable key
 #possable upgrade could be to have a velocity
@@ -84,31 +88,15 @@ class AnalogKey(AnalogEvent):
 
 
 
-#AnalogInput handles the updating of the input
-#current possable problems mainly are to do with invert and
-#its lack of per layer support (needs to be added in AnalogHandler)
-#we also store values for external and internal functions to use that
-#may go unused but still take memory. this may cause problems elsewere
-#e.g if rgb is enabled lol
-##class AnalogInput(AnalogEvent):
-##    def __init__(self, input, filter=DEFAULT_FILTER, invert=False, sensitivity=1):
-##        self.input = lambda: input.value
-##        self.invert = invert
-##        self.sensitivity = sensitivity
-##        self.filter, self.filtermax = eval_filter(filter)
-##        self._state = False
-##        self.raw_value = 0
-##        self.time = ticks_ms()
-##        self.value = 0
-##        self.delta = 0
-##        
-
+#AnalogInput only handles the updating of the input
+#and gets it filters from elseware to allow for on the fly layer swaping
+#as well as not storeing to much big or duped info in many places
 class AnalogInput(AnalogEvent):
     def __init__(self, input):
         self.input = lambda: input.value
         self.value = 0
         self.delta = 0
-        self._state = False
+        self.state = False
         self.time = ticks_ms()
 
     #calculate velocity upon call, this is kept serpate
@@ -119,7 +107,7 @@ class AnalogInput(AnalogEvent):
     #VEL_MAX_TIME might need to be calibraded per keyboard config
     #this mainly depends on the micro-controler and loaded modules
     #more testing needed
-    @property 
+    @property ## NEEDS REWORK FOR NEW STORAGE OF VALS
     def velocity(self):
         #this exprestion should allow for velocity to be from
         #0 to the max val of the filter (then we clamp it)
@@ -137,7 +125,7 @@ class AnalogInput(AnalogEvent):
 
 
     #does what it says on the tin and updates the state of
-    #value. time, delta, _state
+    #value. time, delta, state
     #time is not used in this but it is used in velocity and
     #could be used in other functions (not sure for what but it's there)
     def update_state(self, filter, sensitivity):
@@ -147,29 +135,17 @@ class AnalogInput(AnalogEvent):
         #randomly takes ~27ms (likely due to the garbage colector or other threads)
         if delta not in range(-sensitivity, sensitivity + 1):
             self.value = value #catch slow movements by not updating until delta passed
-            self._state = True
+            self.state = True
             
             
         elif (delta in range(-sensitivity, sensitivity + 1) and
               self.delta not in range(-sensitivity, sensitivity + 1)):
             self.value = value
-            self._state = False
+            self.state = False
         
         
         self.delta = delta
         self.time = ticks_ms()
-
-
-        
-    #WIP
-    #for external compatable functions to use to recalc using custom values
-    def ext_handler(self, function_filter, function_sensitivity):
-        print("null")
-        #things to return
-        #recomputed value if user has not set their own filter for that input
-
-
-
 
 
     #WIP
@@ -177,7 +153,70 @@ class MuxedAnlogInput:
      def __init__(self,idx):
          print("tmp")
 
+#looks like a jumble :/
+#but a lot of it is safety testing for later and
+#to run with less checks in main
+def AnalogHandlerEvtMaping(self):
+    event_map = [] #fix maping of KC keys in evtmap
+    for layer_x, layer in enumerate(self.evtmap):
+        event_map_layer = []
+        for idx, event in enumerate(layer):
+            if hasattr(event, "on_press"):
+                if event == KC.NO:
+                    event_map_layer.append(AnalogNoop)
+                elif event == KC.TRANSPARENT or event == KC.TRNS:
+                    if layer_x > 0:
+                        x = layer_x
+                        while x >= 0:
+                            if not(self.evtmap[x][idx] == KC.TRNS or self.evtmap[x][idx] == KC.TRANSPARENT):
+                                event_map_layer.append(AnalogKey(self.evtmap[x][idx]))
+                            x -= 1
+                else:
+                    event_map_layer.append(AnalogKey(event))
+            else:
+                print("saving event")
+                event_map_layer.append(event)
+        event_map.append(event_map_layer)
 
+    print(event_map)
+    for layer_x, layer in enumerate(event_map):
+        for idx, event in enumerate(layer):
+            if event == None:
+                event_map[layer_x][idx] = AnalogNoop
+            
+
+    self.evtmap = event_map
+    sensitivity_map = [[]]
+    #fill out filtermap and sensitivity map if not provided
+    if self.filtermap == [[]]:
+        if debug.enabled:
+            debug("filtermap not filled")
+        filter_map = []
+        sensitivity_map = []
+        if len(self.evtmap) > 0:
+            for layer_x, layer in enumerate(self.evtmap):
+                filtermap_layer = []
+                sensitivity_layer = []
+                for idx, event in enumerate(layer):
+                    if hasattr(event, 'properties'):
+                        filtermap_layer.append(event.properties.filter)
+                        sensitivity_layer.append(event.properties.sensitivity)
+                    else:
+                        if debug.enabled:
+                            debug("class with no properties found defaulting to base filter")
+                        filtermap_layer.append(8)
+                        sensitivity_layer.append(1)
+                        
+                filter_map.append(filtermap_layer)
+                sensitivity_map.append(sensitivity_layer)
+                
+            self.filtermap = filter_map
+            
+    if self.sensitivitymap == [[]]:
+        self.sensitivitymap = sensitivity_map
+    else:
+        self.sensitivitymap = [[]]
+    
 #Main interface for the user 
 #arrays like filtermap, invertmap, and sensitivitymap auto fill if they only have one entry
 #I don't like how big invert map could be for what it is so perhaps it could be a true bitmap
@@ -192,6 +231,8 @@ class MuxedAnlogInput:
 #have to make masive arrays just to use invert differently on one layer
 #perhaps a more complex parcer is needed during bootup
 #need to add catches for no event, a KC on it's own
+
+
 class AnalogHandler(Module):
     def __init__(self):
         self.analogs = []                 #array of analogs to call during runtime
@@ -218,35 +259,17 @@ class AnalogHandler(Module):
         if self.apins and self.evtmap:
 
             if self.mpins is not None:
-                #pass to mux handler
+                #pass to mux handler?
                 print("not implemented yet")
             else:
                 if debug.enabled:
                     debug('analog mode: direct pin mode')
-                    
+
                 for idx, pin in enumerate(self.apins):
-                    self.analogs.append(AnalogInput(AnalogIn(pin)))
-       
+                    self.analogs.append(AnalogInput(AnalogIn(pin)))      
                 print("analogs: " + str(self.analogs))
 
-
-            if self.filtermap == [[]]:
-                print("filtermap not filled")
-                if len(self.evtmap) > 0:
-                    for layer_x, layer in enumerate(self.evtmap):
-                        for idx, event in enumerate(layer):
-                            print(idx, event)
-                            print(isinstance(event, KC))
-                            if isinstance(event, KC):
-                                print("its a key!")
-                            elif hasattr(event, 'properties'):
-                                print(event.properties.filter)
-                                print(event.properties.sensitivity)
-                            
-
-            else:
-                print("else")
-                        
+            AnalogHandlerEvtMaping(self)           
         elif debug.enabled:
             debug('missing event map or analog pins')
         return
@@ -255,6 +278,7 @@ class AnalogHandler(Module):
     #perhaps for update_state it could takeing the filter from the external list
     #honisly should look into running the external func to get it's info
     #like filters during boot up
+    
     def before_matrix_scan(self, keyboard):
         for idx, analog in enumerate(self.analogs):
             keyboard_layer = keyboard.active_layers[0]
@@ -264,7 +288,8 @@ class AnalogHandler(Module):
                 try:
                     filter_id = self.filtermap[keyboard_layer][idx]
                 except:
-                    debug("error in filtermap. defaulting to 0-255")
+##                    if debug.enabled:#bad to print crap in main loop
+##                        debug("error in filtermap. defaulting to 0-255")
                     filter_id = 8
             else: #this should never happen fool make boot code for building from evtmap
                 filter_id = 8
@@ -292,15 +317,15 @@ class AnalogHandler(Module):
                 filter = lambda input : filter_direction(input, filter_id)
             ######################
                 
-            old_state = analog._state
+            old_state = analog.state
 
             analog.update_state(filter, sensitivity)
          
             event_func = self.evtmap[keyboard_layer][idx]
 
-            if analog._state: #on change
+            if analog.state: #on change
                 event_func.on_change(keyboard, analog)
-            elif not analog._state and old_state: #on stop
+            elif not analog.state and old_state: #on stop
                 event_func.on_stop(keyboard, analog)
             #else: it hasen't moved so no reason to do anything
         return keyboard
