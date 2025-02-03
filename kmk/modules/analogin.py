@@ -58,9 +58,12 @@ class AnalogKey(AnalogEvent):
     def on_stop(self, event, keyboard):
         pass
 
-    def layer_change(self, keyboard):
-        self.pressed = False
-        keyboard.pre_process_key(self.key, False)
+    def layer_change(self, event, keyboard, ingress):
+        if ingress:
+            self.on_change(event, keyboard)
+        else: #egress
+            self.pressed = False
+            keyboard.pre_process_key(self.key, False)
 
 class AnalogInput:
     def __init__(self, input):
@@ -119,7 +122,7 @@ def invert_bool_fill(invertmap, filtermap):
     if invertmap == True:
         for idx, filter in enumerate(filtermap):
             filter_max = filter(65535)
-            inverted_filters.append(lambda input: ((~filter(input)) + filter_max))
+            inverted_filters.append(lambda input: ((~filter(input)) + (filter_max + 1)))
     else:
         inverted_filters = filtermap
     return inverted_filters
@@ -129,7 +132,7 @@ def invert_filters(invertmap, filtermap, layer_num):
     if type(invertmap) == bool:
         inverted_filters = invert_bool_fill(invertmap, filtermap)
     elif type(invertmap) == list:
-        invert_layer = self.invertmap[layer_num]
+        invert_layer = invertmap[layer_num]
         if type(invert_layer) == bool:
             inverted_filters = invert_bool_fill(invert_layer, filtermap)
         elif type(invert_layer) == list:
@@ -137,7 +140,7 @@ def invert_filters(invertmap, filtermap, layer_num):
                 if invert == True:
                     filter = filtermap[idx_invert]
                     filter_max = filter(65535)
-                    inverted_filters.append(lambda input: ((~filter(input)) + filter_max))
+                    inverted_filters.append(lambda input: ((~filter(input)) + (filter_max + 1)))
                 else:
                     inverted_filters.append(filtermap[idx_invert])
     return inverted_filters
@@ -193,6 +196,7 @@ class AnalogHandler(Module):
 
 
                 if self.invertmap != None:
+                    print("inverting filters")
                     filtermap.append(invert_filters(self.invertmap, filtermap_layer, idx_layer))
                 else:
                     filtermap.append(filtermap_layer)
@@ -211,19 +215,11 @@ class AnalogHandler(Module):
         
         if self.lastlayer != keyboard_layer:
             layer_changed = True
+            #print("layer changed")
         else:
             layer_changed = False
         
         for idx, input in enumerate(self.inputs):
-
-            if layer_changed:
-                event = self.evtmap[self.lastlayer][idx]
-                try:
-                    event.layer_change(keyboard)
-                except:
-                    if debug.enabled:
-                        debug("missing layer_change")
-            
             
             if self.sensitivity != None:##add sensitivity filtering to boot :/
                 sensitivity = self.sensitivity[keyboard_layer][idx]
@@ -237,8 +233,6 @@ class AnalogHandler(Module):
             
             delta = last_value - current_value
 
-
-            
             if delta not in range(-sensitivity, sensitivity + 1):
                 input.last_value = current_value #catch slow movements by not updating until delta passed
                 input.moving = True
@@ -253,34 +247,47 @@ class AnalogHandler(Module):
             input.time = ticks_ms()
             input.delta = delta
 
-            
-            if input.moving: #on change
+
+
+            if layer_changed:
+                event_func = self.evtmap[self.lastlayer][idx]
+                event_filter = self.filtermap[self.lastlayer][idx]
+                filtered_input = event_filter(current_value)
+                filtered_delta = event_filter(last_value) - event_filter(current_value)
+                event = EventWrapper(filtered_input, filtered_delta, timedelta)
+                try:
+                    event_func.layer_change(event, keyboard, False)
+                except Exception as e:
+                    if debug.enabled:
+                        debug("idx", idx, "layer_change ingress: ", e)
+
+            if input.moving or last_state or layer_changed:
                 event_func = self.evtmap[keyboard_layer][idx]
                 event_filter = self.filtermap[keyboard_layer][idx]
                 filtered_input = event_filter(current_value)
                 filtered_delta = event_filter(last_value) - event_filter(current_value)
-
                 event = EventWrapper(filtered_input, filtered_delta, timedelta)
-                
-                try:
-                    event_func.on_change(event, keyboard)
-                except:
-                    if debug.enabled:
-                        debug("missing on_change")
-            elif not input.moving and last_state: #on stop
-                event_func = self.evtmap[keyboard_layer][idx]
-                event_filter = self.filtermap[keyboard_layer][idx]
-                filtered_input = event_filter(current_value)
-                filtered_delta = event_filter(delta)
 
-                event = EventWrapper(filtered_input, filtered_delta, timedelta)
-                try:
-                    event_func.on_stop(event, keyboard)
-                except:
-                    if debug.enabled:
-                        debug("missing on_stop")
-                        
-                
+                if input.moving: #on change
+                    try:
+                        event_func.on_change(event, keyboard)
+                    except Exception as e:
+                        if debug.enabled:
+                            debug("on_change: ", e)
+                elif not input.moving and last_state: #on stop
+                    try:
+                        event_func.on_stop(event, keyboard)
+                    except Exception as e:
+                        if debug.enabled:
+                            debug("on_stop: ", e)
+                elif layer_changed:
+                    try:
+                        event_func.layer_change(event, keyboard, True)
+                    except Exception as e:
+                        if debug.enabled:
+                            debug("idx", idx, "layer_change egress:", e)
+            
+
         self.lastlayer = keyboard_layer
 
     def after_matrix_scan(self, keyboard):
